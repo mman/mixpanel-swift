@@ -254,7 +254,9 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     let readWriteLock: ReadWriteLock
     #if os(iOS)
     static let reachability = SCNetworkReachabilityCreateWithName(nil, "api.mixpanel.com")
+    #if !targetEnvironment(macCatalyst)
     static let telephonyInfo = CTTelephonyNetworkInfo()
+    #endif
     #endif
     #if !os(OSX) && !WATCH_OS
     var taskId = UIBackgroundTaskIdentifier.invalid
@@ -384,7 +386,7 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     private func setupListeners() {
         let notificationCenter = NotificationCenter.default
         trackIntegration()
-        #if os(iOS)
+        #if os(iOS) && !targetEnvironment(macCatalyst)
             setCurrentRadio()
             notificationCenter.addObserver(self,
                                            selector: #selector(setCurrentRadio),
@@ -659,7 +661,7 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
             }
         }
     }
-    #if os(iOS)
+    #if os(iOS) && !targetEnvironment(macCatalyst)
     @objc func setCurrentRadio() {
         var radio = MixpanelInstance.telephonyInfo.currentRadioAccessTechnology ?? "None"
         let prefix = "CTRadioAccessTechnology"
