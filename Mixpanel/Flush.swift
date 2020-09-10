@@ -10,39 +10,40 @@ import Foundation
 
 protocol FlushDelegate {
     func flush(completion: (() -> Void)?)
+    func updateQueue(_ queue: Queue, type: FlushType)
     #if os(iOS)
     func updateNetworkActivityIndicator(_ on: Bool)
     #endif // os(iOS)
 }
 
 class Flush: AppLifecycle {
-    let lock: ReadWriteLock
     var timer: Timer?
     var delegate: FlushDelegate?
     var useIPAddressForGeoLocation = true
     var flushRequest: FlushRequest
     var flushOnBackground = true
     var _flushInterval = 0.0
+    private let flushIntervalReadWriteLock: DispatchQueue
+
     var flushInterval: Double {
         set {
-            objc_sync_enter(self)
-            _flushInterval = newValue
-            objc_sync_exit(self)
+            flushIntervalReadWriteLock.sync(flags: .barrier, execute: {
+                _flushInterval = newValue
+            })
 
             delegate?.flush(completion: nil)
             startFlushTimer()
         }
         get {
-            objc_sync_enter(self)
-            defer { objc_sync_exit(self) }
-
-            return _flushInterval
+            flushIntervalReadWriteLock.sync {
+                return _flushInterval
+            }
         }
     }
 
-    required init(basePathIdentifier: String, lock: ReadWriteLock) {
+    required init(basePathIdentifier: String) {
         self.flushRequest = FlushRequest(basePathIdentifier: basePathIdentifier)
-        self.lock = lock
+        flushIntervalReadWriteLock = DispatchQueue(label: "com.mixpanel.flush_interval.lock", qos: .utility, attributes: .concurrent)
     }
 
     func flushEventsQueue(_ eventsQueue: Queue, automaticEventsEnabled: Bool?) -> Queue? {
@@ -83,7 +84,7 @@ class Flush: AppLifecycle {
 
     func flushQueue(type: FlushType, queue: Queue) -> Queue? {
         if flushRequest.requestNotAllowed() {
-            return nil
+            return queue
         }
         return flushQueueInBatches(queue, type: type)
     }
@@ -122,9 +123,12 @@ class Flush: AppLifecycle {
         var mutableQueue = queue
         while !mutableQueue.isEmpty {
             var shouldContinue = false
-            let batchSize = min(queue.count, APIConstants.batchSize)
+            let batchSize = min(mutableQueue.count, APIConstants.batchSize)
             let range = 0..<batchSize
-            let batch = Array(queue[range])
+            let batch = Array(mutableQueue[range])
+            // Log data payload sent
+            Logger.debug(message: "Sending batch of data")
+            Logger.debug(message: batch as Any)
             let requestData = JSONHandler.encodeAPIData(batch)
             if let requestData = requestData {
                 let semaphore = DispatchSemaphore(value: 0)
@@ -150,6 +154,7 @@ class Flush: AppLifecycle {
                                                 } else {
                                                     shadowQueue.removeAll()
                                                 }
+                                                self?.delegate?.updateQueue(shadowQueue, type: type)
                                             }
                                             shouldContinue = success
                                             semaphore.signal()

@@ -29,6 +29,13 @@ class MixpanelBaseTests: XCTestCase, MixpanelDelegate {
         mixpanel = Mixpanel.initialize(token: kTestToken, launchOptions: nil, flushInterval: 0)
         mixpanel.reset()
         waitForTrackingQueue()
+
+        if let loginView = self.topViewController() as? LoginViewController {
+            loginView.goToMainView()
+        } else {
+            NSLog("Expected login screen but not found.")
+        }
+
         NSLog("finished test setup")
     }
 
@@ -50,14 +57,12 @@ class MixpanelBaseTests: XCTestCase, MixpanelDelegate {
 
     func deleteOptOutSettings(mixpanelInstance: MixpanelInstance)
     {
-        objc_sync_enter(self)
         let filePath = Persistence.filePathWithType(.optOutStatus, token: mixpanelInstance.apiToken)
         do {
             try FileManager.default.removeItem(atPath: filePath!)
         } catch {
             Logger.info(message: "Unable to remove file at path: \(filePath!)")
         }
-        objc_sync_exit(self)
     }
     
     func mixpanelWillFlush(_ mixpanel: MixpanelInstance) -> Bool {

@@ -168,12 +168,14 @@ class MixpanelDemoTests: MixpanelBaseTests {
             // run this twice to test reset works correctly wrt to distinct ids
             let distinctId: String = "d1"
             // try this for ODIN and nil
+            #if MIXPANEL_UNIQUE_DISTINCT_ID
             XCTAssertEqual(mixpanel.distinctId,
                            mixpanel.defaultDistinctId(),
                            "mixpanel identify failed to set default distinct id")
             XCTAssertEqual(mixpanel.anonymousId,
                            mixpanel.defaultDistinctId(),
                            "mixpanel failed to set default anonymous id")
+            #endif
             XCTAssertNil(mixpanel.people.distinctId,
                          "mixpanel people distinct id should default to nil")
             XCTAssertNil(mixpanel.people.distinctId,
@@ -182,9 +184,11 @@ class MixpanelDemoTests: MixpanelBaseTests {
             waitForTrackingQueue()
             XCTAssertTrue(mixpanel.eventsQueue.count == 1,
                           "events should be sent right away with default distinct id")
+            #if MIXPANEL_UNIQUE_DISTINCT_ID
             XCTAssertEqual((mixpanel.eventsQueue.last?["properties"] as? InternalProperties)?["distinct_id"] as? String,
                            mixpanel.defaultDistinctId(),
                            "events should use default distinct id if none set")
+            #endif
             XCTAssertEqual((mixpanel.eventsQueue.last?["properties"] as? InternalProperties)?["$lib_version"] as? String,
                            AutomaticProperties.libVersion(),
                            "events should has lib version in internal properties")
@@ -275,10 +279,9 @@ class MixpanelDemoTests: MixpanelBaseTests {
             let p: InternalProperties = e["properties"] as! InternalProperties
             XCTAssertEqual(p["distinct_id"] as? String, newDistinctId, "wrong distinct_id")
             XCTAssertEqual(p["$anon_distinct_id"] as? String, prevDistinctId, "wrong $anon_distinct_id")
-            #if MIXPANEL_RANDOM_DISTINCT_ID
             XCTAssertNotEqual(prevDistinctId, originalDistinctId, "After reset, UUID will be used - never the same");
-            #else
-            XCTAssertEqual(prevDistinctId, originalDistinctId, "After reset, IFA/UIDevice id will be used - always the same");
+            #if MIXPANEL_UNIQUE_DISTINCT_ID
+            XCTAssertEqual(prevDistinctId, originalDistinctId, "After reset, IFV will be used - always the same");
             #endif
             mixpanel.reset()
             waitForTrackingQueue()
@@ -498,7 +501,7 @@ class MixpanelDemoTests: MixpanelBaseTests {
 
     func testTrackPushNotification() {
         let nsJourneyId: NSNumber = 1
-        mixpanel.trackPushNotification(["mp": ["m": 98765, "c": 56789, "journey_id": nsJourneyId, "additional_param": "abcd"]])
+        mixpanel.trackPushNotification(["mp": ["m": 98765, "c": 56789, "journey_id": nsJourneyId, "additional_param": "abcd", "from_preview": true]])
         waitForTrackingQueue()
         let e: InternalProperties = mixpanel.eventsQueue.last!
         XCTAssertEqual(e["event"] as? String, "$campaign_received", "incorrect event name")
@@ -506,6 +509,7 @@ class MixpanelDemoTests: MixpanelBaseTests {
         XCTAssertEqual(p["campaign_id"] as? Int, 56789, "campaign_id not equal")
         XCTAssertEqual(p["message_id"] as? Int, 98765, "message_id not equal")
         XCTAssertEqual(p["journey_id"] as? Int, 1, "journey_id not equal")
+        XCTAssertEqual(p["from_preview"] as? Bool, true, "from_preview not equal")
         XCTAssertEqual(p["additional_param"] as? String, "abcd", "additional_param not equal")
         XCTAssertEqual(p["message_type"] as? String, "push", "type does not equal inapp")
     }
@@ -544,9 +548,11 @@ class MixpanelDemoTests: MixpanelBaseTests {
         mixpanel.archive()
         mixpanel.reset()
         waitForTrackingQueue()
+        #if MIXPANEL_UNIQUE_DISTINCT_ID
         XCTAssertEqual(mixpanel.distinctId,
                        mixpanel.defaultDistinctId(),
                        "distinct id failed to reset")
+        #endif
         XCTAssertNil(mixpanel.people.distinctId, "people distinct id failed to reset")
         XCTAssertTrue(mixpanel.currentSuperProperties().isEmpty,
                       "super properties failed to reset")
@@ -554,8 +560,10 @@ class MixpanelDemoTests: MixpanelBaseTests {
         XCTAssertTrue(mixpanel.people.peopleQueue.isEmpty, "people queue failed to reset")
         mixpanel = Mixpanel.initialize(token: kTestToken, launchOptions: nil, flushInterval: 60)
         waitForTrackingQueue()
+        #if MIXPANEL_UNIQUE_DISTINCT_ID
         XCTAssertEqual(mixpanel.distinctId, mixpanel.defaultDistinctId(),
                        "distinct id failed to reset after archive")
+        #endif
         XCTAssertNil(mixpanel.people.distinctId,
                      "people distinct id failed to reset after archive")
         XCTAssertTrue(mixpanel.currentSuperProperties().isEmpty,
@@ -566,11 +574,42 @@ class MixpanelDemoTests: MixpanelBaseTests {
                       "people queue failed to reset after archive")
     }
 
+    func testArchiveNSNumberBoolIntProperty() {
+        let testToken = randomId()
+        mixpanel = Mixpanel.initialize(token: testToken, launchOptions: nil, flushInterval: 60)
+        let aBoolNumber: Bool = true
+        let aBoolNSNumber = NSNumber(value: aBoolNumber)
+        
+        let aIntNumber: Int = 1
+        let aIntNSNumber = NSNumber(value: aIntNumber)
+        
+        mixpanel.track(event: "e1", properties:  ["p1": aBoolNSNumber, "p2": aIntNSNumber])
+        mixpanel.archive()
+        waitForTrackingQueue()
+        mixpanel = Mixpanel.initialize(token: testToken, launchOptions: nil, flushInterval: 60)
+        waitForTrackingQueue()
+        let properties: [String: Any] = mixpanel.eventsQueue[0]["properties"] as! [String: Any]
+        
+        XCTAssertTrue(isBoolNumber(num: properties["p1"]! as! NSNumber),
+                          "The bool value should be unarchived as bool")
+        XCTAssertFalse(isBoolNumber(num: properties["p2"]! as! NSNumber),
+                          "The int value should not be unarchived as bool")
+    }
+    
+    private func isBoolNumber(num: NSNumber) -> Bool
+    {
+        let boolID = CFBooleanGetTypeID() // the type ID of CFBoolean
+        let numID = CFGetTypeID(num) // the type ID of num
+        return numID == boolID
+    }
+
     func testArchive() {
         let testToken = randomId()
         mixpanel = Mixpanel.initialize(token: testToken, launchOptions: nil, flushInterval: 60)
+        #if MIXPANEL_UNIQUE_DISTINCT_ID
         XCTAssertEqual(mixpanel.distinctId, mixpanel.defaultDistinctId(),
                        "default distinct id archive failed")
+        #endif
         XCTAssertTrue(mixpanel.currentSuperProperties().isEmpty,
                       "default super properties archive failed")
         XCTAssertTrue(mixpanel.eventsQueue.isEmpty, "default events queue archive failed")
@@ -670,8 +709,10 @@ class MixpanelDemoTests: MixpanelBaseTests {
         Persistence.deleteMPUserDefaultsData(token: testToken)
         mixpanel = Mixpanel.initialize(token: testToken, launchOptions: nil, flushInterval: 60)
         waitForTrackingQueue()
+        #if MIXPANEL_UNIQUE_DISTINCT_ID
         XCTAssertEqual(mixpanel.distinctId, mixpanel.defaultDistinctId(),
                        "default distinct id from garbage failed")
+        #endif
         XCTAssertTrue(mixpanel.currentSuperProperties().isEmpty,
                       "default super properties from garbage failed")
         XCTAssertNotNil(mixpanel.eventsQueue, "default events queue from garbage is nil")
@@ -828,7 +869,7 @@ class MixpanelDemoTests: MixpanelBaseTests {
     func testReadWriteLock() {
         var array = [Int]()
         let lock = ReadWriteLock(label: "test")
-        let queue = DispatchQueue(label: "concurrent", attributes: .concurrent)
+        let queue = DispatchQueue(label: "concurrent", qos: .utility, attributes: .concurrent)
         for _ in 0..<10 {
             queue.async {
                 lock.write {

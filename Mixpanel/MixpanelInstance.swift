@@ -45,6 +45,8 @@ protocol AppLifecycle {
 
 /// The class that represents the Mixpanel Instance
 open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDelegate {
+    /// apiToken string that identifies the project to track data to
+    open var apiToken = ""
 
     /// The a MixpanelDelegate object that gives control over Mixpanel network activity.
     open var delegate: MixpanelDelegate?
@@ -74,6 +76,10 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     /// Controls whether to show spinning network activity indicator when flushing
     /// data to the Mixpanel servers. Defaults to true.
     open var showNetworkActivityIndicator = true
+
+    /// This allows enabling or disabling collecting common mobile events
+    /// If this is not set, it will query the Autotrack settings from the Mixpanel server
+    open var trackAutomaticEventsEnabled: Bool? = nil
 
     /// Flush timer's interval.
     /// Setting a flush interval of 0 will turn off the flush timer.
@@ -241,7 +247,6 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     }
     #endif // DECIDE
 
-    var apiToken = ""
     var superProperties = InternalProperties()
     var eventsQueue = Queue()
     var flushEventsQueue = Queue()
@@ -252,7 +257,7 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     var networkQueue: DispatchQueue!
     var optOutStatus: Bool?
     let readWriteLock: ReadWriteLock
-    #if os(iOS)
+    #if os(iOS) && !targetEnvironment(macCatalyst)
     static let reachability = SCNetworkReachabilityCreateWithName(nil, "api.mixpanel.com")
     #if !targetEnvironment(macCatalyst)
     static let telephonyInfo = CTTelephonyNetworkInfo()
@@ -278,8 +283,8 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
             self.apiToken = apiToken
         }
         self.name = name
-        self.readWriteLock = ReadWriteLock(label: "globalLock")
-        flushInstance = Flush(basePathIdentifier: name, lock: self.readWriteLock)
+        self.readWriteLock = ReadWriteLock(label: "com.mixpanel.globallock")
+        flushInstance = Flush(basePathIdentifier: name)
         #if DECIDE
             decideInstance = Decide(basePathIdentifier: name, lock: self.readWriteLock)
         #endif // DECIDE
@@ -291,7 +296,7 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
                               metadata: sessionMetadata)
         networkQueue = DispatchQueue(label: "\(label).network)", qos: .utility)
 
-        #if os(iOS)
+        #if os(iOS) && !targetEnvironment(macCatalyst)
             if let reachability = MixpanelInstance.reachability {
                 var context = SCNetworkReachabilityContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
                 func reachabilityCallback(reachability: SCNetworkReachability, flags: SCNetworkReachabilityFlags, unsafePointer: UnsafeMutableRawPointer?) -> Void {
@@ -353,16 +358,16 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
             self.apiToken = apiToken
         }
         self.name = name
-        self.readWriteLock = ReadWriteLock(label: "globalLock")
-        flushInstance = Flush(basePathIdentifier: name, lock: self.readWriteLock)
+        self.readWriteLock = ReadWriteLock(label: "com.mixpanel.globallock")
+        flushInstance = Flush(basePathIdentifier: name)
         let label = "com.mixpanel.\(self.apiToken)"
-        trackingQueue = DispatchQueue(label: label)
+        trackingQueue = DispatchQueue(label: label, qos: .utility)
         sessionMetadata = SessionMetadata(trackingQueue: trackingQueue)
         trackInstance = Track(apiToken: self.apiToken,
                               lock: self.readWriteLock,
                               metadata: sessionMetadata)
         flushInstance.delegate = self
-        networkQueue = DispatchQueue(label: label)
+        networkQueue = DispatchQueue(label: label, qos: .utility)
         distinctId = defaultDistinctId()
         people = People(apiToken: self.apiToken,
                         serialQueue: trackingQueue,
@@ -388,10 +393,12 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
         trackIntegration()
         #if os(iOS) && !targetEnvironment(macCatalyst)
             setCurrentRadio()
-            notificationCenter.addObserver(self,
-                                           selector: #selector(setCurrentRadio),
-                                           name: .CTRadioAccessTechnologyDidChange,
-                                           object: nil)
+        // Temporarily remove the ability to monitor the radio change due to a crash issue might relate to the api from Apple
+        // https://openradar.appspot.com/46873673
+        //    notificationCenter.addObserver(self,
+        //                                   selector: #selector(setCurrentRadio),
+        //                                   name: .CTRadioAccessTechnologyDidChange,
+        //                                   object: nil)
             #if DECIDE
                 notificationCenter.addObserver(self,
                                                selector: #selector(executeTweaks),
@@ -449,7 +456,7 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        #if os(iOS) && !WATCH_OS
+        #if os(iOS) && !WATCH_OS && !targetEnvironment(macCatalyst)
             if let reachability = MixpanelInstance.reachability {
                 if !SCNetworkReachabilitySetCallback(reachability, nil, nil) {
                     Logger.error(message: "\(self) error unsetting reachability callback")
@@ -477,36 +484,37 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     @objc private func applicationDidBecomeActive(_ notification: Notification) {
         flushInstance.applicationDidBecomeActive()
         #if DECIDE
-            if checkForVariantsOnActive || checkForNotificationOnActive {
-                checkDecide { decideResponse in
-                    if let decideResponse = decideResponse {
-                        DispatchQueue.main.sync {
-                            decideResponse.toFinishVariants.forEach { $0.finish() }
-                        }
+        checkDecide { decideResponse in
+            if let decideResponse = decideResponse {
+                DispatchQueue.main.sync {
+                    decideResponse.toFinishVariants.forEach { $0.finish() }
+                }
 
-                        if self.showNotificationOnActive && !decideResponse.unshownInAppNotifications.isEmpty {
-                            self.decideInstance.notificationsInstance.showNotification(decideResponse.unshownInAppNotifications.first!)
-                        }
+                if self.checkForNotificationOnActive && self.showNotificationOnActive && !decideResponse.unshownInAppNotifications.isEmpty {
+                    self.decideInstance.notificationsInstance.showNotification(decideResponse.unshownInAppNotifications.first!)
+                }
 
-                        DispatchQueue.main.sync {
-                            for binding in decideResponse.newCodelessBindings {
-                                binding.execute()
-                            }
-                        }
+                DispatchQueue.main.sync {
+                    for binding in decideResponse.newCodelessBindings {
+                        binding.execute()
+                    }
+                }
 
-                        DispatchQueue.main.sync {
-                            for variant in decideResponse.newVariants {
-                                variant.execute()
-                                self.markVariantRun(variant)
-                            }
-                        }
-
-                        if decideResponse.integrations.count > 0 {
-                            self.connectIntegrations.setupIntegrations(decideResponse.integrations)
+                if self.checkForVariantsOnActive {
+                    DispatchQueue.main.sync {
+                        for variant in decideResponse.newVariants {
+                            variant.execute()
+                            self.markVariantRun(variant)
                         }
                     }
                 }
+
+                if decideResponse.integrations.count > 0 {
+                    self.connectIntegrations.setupIntegrations(decideResponse.integrations)
+                }
             }
+        }
+
         #endif // DECIDE
     }
 
@@ -592,59 +600,32 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     #endif // os(OSX)
 
     @objc private func applicationWillTerminate(_ notification: Notification) {
-        self.archive()
+        networkQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.archive()
+        }
     }
 
     func defaultDistinctId() -> String {
-        #if MIXPANEL_RANDOM_DISTINCT_ID
-        let distinctId: String? = UUID().uuidString
-        #elseif !os(OSX) && !WATCH_OS
-        var distinctId: String? = IFA()
-        if distinctId == nil && NSClassFromString("UIDevice") != nil {
+        #if MIXPANEL_UNIQUE_DISTINCT_ID
+        #if !os(OSX) && !WATCH_OS
+        var distinctId: String? = nil
+        if NSClassFromString("UIDevice") != nil {
             distinctId = UIDevice.current.identifierForVendor?.uuidString
         }
         #elseif os(OSX)
         let distinctId = MixpanelInstance.macOSIdentifier()
-        #else
-        let distinctId: String? = nil
-        #endif // os(OSX)
+        #endif
+        #else // use a random UUID by default
+        let distinctId: String? = UUID().uuidString
+        #endif
         guard let distId = distinctId else {
             return UUID().uuidString
         }
         return distId
     }
 
-    #if !os(OSX) && !WATCH_OS
-    func IFA() -> String? {
-        var ifa: String? = nil
-        #if !MIXPANEL_NO_IFA
-        if let ASIdentifierManagerClass = NSClassFromString("ASIdentifierManager") {
-            let sharedManagerSelector = NSSelectorFromString("sharedManager")
-            if let sharedManagerIMP = ASIdentifierManagerClass.method(for: sharedManagerSelector) {
-                typealias sharedManagerFunc = @convention(c) (AnyObject, Selector) -> AnyObject?
-                let curriedImplementation = unsafeBitCast(sharedManagerIMP, to: sharedManagerFunc.self)
-                if let sharedManager = curriedImplementation(ASIdentifierManagerClass.self, sharedManagerSelector) {
-                    let advertisingTrackingEnabledSelector = NSSelectorFromString("isAdvertisingTrackingEnabled")
-                    if let isTrackingEnabledIMP = sharedManager.method(for: advertisingTrackingEnabledSelector) {
-                        typealias isTrackingEnabledFunc = @convention(c) (AnyObject, Selector) -> Bool
-                        let curriedImplementation2 = unsafeBitCast(isTrackingEnabledIMP, to: isTrackingEnabledFunc.self)
-                        let isTrackingEnabled = curriedImplementation2(self, advertisingTrackingEnabledSelector)
-                        if isTrackingEnabled {
-                            let advertisingIdentifierSelector = NSSelectorFromString("advertisingIdentifier")
-                            if let advertisingIdentifierIMP = sharedManager.method(for: advertisingIdentifierSelector) {
-                                typealias adIdentifierFunc = @convention(c) (AnyObject, Selector) -> NSUUID
-                                let curriedImplementation3 = unsafeBitCast(advertisingIdentifierIMP, to: adIdentifierFunc.self)
-                                ifa = curriedImplementation3(self, advertisingIdentifierSelector).uuidString
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        #endif
-        return ifa
-    }
-    #elseif os(OSX)
+    #if os(OSX)
     static func macOSIdentifier() -> String? {
         let platformExpert: io_service_t = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOPlatformExpertDevice"));
         let serialNumberAsCFString = IORegistryEntryCreateCFProperty(platformExpert, kIOPlatformSerialNumberKey as CFString, kCFAllocatorDefault, 0);
@@ -663,11 +644,35 @@ open class MixpanelInstance: CustomDebugStringConvertible, FlushDelegate, AEDele
     }
     #if os(iOS) && !targetEnvironment(macCatalyst)
     @objc func setCurrentRadio() {
-        var radio = MixpanelInstance.telephonyInfo.currentRadioAccessTechnology ?? "None"
+        var radio = ""
         let prefix = "CTRadioAccessTechnology"
-        if radio.hasPrefix(prefix) {
-            radio = (radio as NSString).substring(from: prefix.count)
+        if #available(iOS 12.0, *) {
+            if let radioDict = MixpanelInstance.telephonyInfo.serviceCurrentRadioAccessTechnology {
+                for (_, value) in radioDict where value.count > 0 && value.hasPrefix(prefix) {
+                    // the first should be the prefix, second the target
+                    let components = value.components(separatedBy: prefix)
+
+                    // Something went wrong and we have more than prefix:target
+                    guard components.count == 2 else {
+                        continue
+                    }
+
+                    // Safe to directly access by index since we confirmed count == 2 above
+                    let radioValue = components[1]
+                    
+                    // Send to parent
+                    radio += radio.count > 0 ? ", \(radioValue)" : radioValue
+                }
+
+                radio = radio.count > 0 ? radio : "None"
+            }
+        } else {
+            radio = MixpanelInstance.telephonyInfo.currentRadioAccessTechnology ?? "None"
+            if radio.hasPrefix(prefix) {
+                radio = (radio as NSString).substring(from: prefix.count)
+            }
         }
+        
         trackingQueue.async {
             AutomaticProperties.automaticPropertiesLock.write { [weak self, radio] in
                 AutomaticProperties.properties["$radio"] = radio
@@ -722,30 +727,17 @@ extension MixpanelInstance {
     /**
      Sets the distinct ID of the current user.
 
-     Mixpanel will choose a default distinct ID based on whether you are using the
-     AdSupport.framework or not.
+     Mixpanel uses a randomly generated persistent UUID  as the default local distinct ID.
 
-     If you are not using the AdSupport Framework (iAds), then we use the IFV String
-     (`UIDevice.current().identifierForVendor`) as the default distinct ID. This ID will
-     identify a user across all apps by the same vendor, but cannot be used to link the same
-     user across apps from different vendors. If we are unable to get the IFV, we will fall
-     back to generating a random persistent UUID
+     If you want to  use a unique persistent UUID, you can define the
+     <code>MIXPANEL_UNIQUE_DISTINCT_ID</code> flag in your <code>Active Compilation Conditions</code>
+     build settings. It then uses the IFV String (`UIDevice.current().identifierForVendor`) as
+     the default local distinct ID. This ID will identify a user across all apps by the same vendor, but cannot be
+     used to link the same user across apps from different vendors. If we are unable to get an IFV, we will fall
+     back to generating a random persistent UUID.
 
-     If you are showing iAds in your application, you are allowed use the iOS ID
-     for Advertising (IFA) to identify users. If you have this framework in your
-     app, Mixpanel will use the IFA as the default distinct ID. If you have
-     AdSupport installed but still don't want to use the IFA, you can define the
-     <code>MIXPANEL_NO_IFA</code> flag in your <code>Active Compilation Conditions</code>
-     build settings, and Mixpanel will use the IFV as the default distinct ID.
-
-     If we are unable to get an IFA or IFV, we will fall back to generating a
-     random persistent UUID. If you want to always use a random persistent UUID
-     you can define the <code>MIXPANEL_RANDOM_DISTINCT_ID</code> preprocessor flag
-     in your build settings.
-
-     For tracking events, you do not need to call `identify:` if you
-     want to use the default. However,
-     **Mixpanel People always requires an explicit call to `identify:`.**
+     For tracking events, you do not need to call `identify:`. However,
+     **Mixpanel User profiles always requires an explicit call to `identify:`.**
      If calls are made to
      `set:`, `increment` or other `People`
      methods prior to calling `identify:`, then they are queued up and
@@ -823,23 +815,19 @@ extension MixpanelInstance {
     }
 
     /**
-     Creates a distinctId alias from alias to the current id.
+     The alias method creates an alias which Mixpanel will use to remap one id to another.
+     Multiple aliases can point to the same identifier.
 
-     This method is used to map an identifier called an alias to the existing Mixpanel
-     distinct id. This causes all events and people requests sent with the alias to be
-     mapped back to the original distinct id. The recommended usage pattern is to call
-     createAlias: and then identify: (with their new user ID)
-     when they log in the next time. This will keep your signup funnels working
-     correctly.
-     This makes the current id and 'Alias' interchangeable distinct ids.
-     Mixpanel.
-     mixpanelInstance.createAlias("Alias", mixpanelInstance.distinctId)
 
-     - precondition: You must call identify if you haven't already
-     (e.g. when your app launches)
+     `mixpanelInstance.createAlias("New ID", distinctId: mixpanelInstance.distinctId)`
 
-     - parameter alias:      the new distinct id that should represent the original
-     - parameter distinctId: the old distinct id that alias will be mapped to
+     You can add multiple id aliases to the existing id
+
+     `mixpanelInstance.createAlias("Newer ID", distinctId: mixpanelInstance.distinctId)`
+
+
+     - parameter alias:      A unique identifier that you want to use as an identifier for this user.
+     - parameter distinctId: The current user identifier.
      - parameter usePeople: boolean that controls whether or not to set the people distinctId to the event distinctId.
      This should only be set to false if you wish to prevent people profile updates for that user.
      */
@@ -909,7 +897,21 @@ extension MixpanelInstance {
                     self.people.peopleQueue = Queue()
                     self.people.unidentifiedQueue = Queue()
                     #if DECIDE
-                    self.decideInstance.notificationsInstance.shownNotifications = Set()
+                    /*
+                     * TODO: Index `shownNotifications` on token+distinctId and never clear.
+                     *
+                     * Currently, are options are:
+                     *  1.  Clear `shownNotifications` on reset. This can result in a user seeing a duplicate notification if
+                     *      there is a data delay and they logout and back in.
+                     *  2.  Not clear `showNotifications` on reset. This can result in a notification not being shown to
+                     *      subsequent user in multi-user, same device scenarios.
+                     *
+                     *  The multi-user, same device scenario seems more of an edgecase thus justifying the change to not
+                     *  clear `shownNotifications` on logout.
+                     *
+                     */
+                    // self.decideInstance.notificationsInstance.shownNotifications = Set()
+
                     self.decideInstance.decideFetched = false
                     self.decideInstance.ABTestingInstance.variants = Set()
                     self.decideInstance.codelessInstance.codelessBindings = Set()
@@ -950,7 +952,7 @@ extension MixpanelInstance {
                                                 peopleDistinctId: people.distinctId,
                                                 peopleUnidentifiedQueue: people.unidentifiedQueue,
                                                 shownNotifications: decideInstance.notificationsInstance.shownNotifications,
-                                                automaticEventsEnabled: decideInstance.automaticEventsEnabled)
+                                                automaticEventsEnabled: trackAutomaticEventsEnabled ?? decideInstance.automaticEventsEnabled)
             Persistence.archive(eventsQueue: flushEventsQueue + eventsQueue,
                                 peopleQueue: people.flushPeopleQueue + people.peopleQueue,
                                 groupsQueue: flushGroupsQueue + groupsQueue,
@@ -1032,7 +1034,7 @@ extension MixpanelInstance {
                                                 peopleDistinctId: people.distinctId,
                                                 peopleUnidentifiedQueue: people.unidentifiedQueue,
                                                 shownNotifications: decideInstance.notificationsInstance.shownNotifications,
-                                                automaticEventsEnabled: decideInstance.automaticEventsEnabled)
+                                                automaticEventsEnabled: trackAutomaticEventsEnabled ?? decideInstance.automaticEventsEnabled)
             Persistence.archiveProperties(properties, token: apiToken)
         }
     }
@@ -1133,7 +1135,7 @@ extension MixpanelInstance {
                 }
 
                 #if DECIDE
-                let automaticEventsEnabled = self.decideInstance.automaticEventsEnabled
+                let automaticEventsEnabled = self.trackAutomaticEventsEnabled ?? self.decideInstance.automaticEventsEnabled
                 #elseif TV_AUTO_EVENTS
                 let automaticEventsEnabled = true
                 #else
@@ -1176,6 +1178,21 @@ extension MixpanelInstance {
                 }
             }
         }}
+    
+    
+    func updateQueue(_ queue: Queue, type: FlushType) {
+        self.readWriteLock.write {
+            if type == .events {
+                self.flushEventsQueue = queue
+            } else if type == .people {
+                self.people.flushPeopleQueue = queue
+            } else if type == .groups {
+                self.flushGroupsQueue = queue
+            }
+        }
+        
+        self.archive()
+    }
 }
 
 extension MixpanelInstance {
@@ -1198,10 +1215,6 @@ extension MixpanelInstance {
             return
         }
         let epochInterval = Date().timeIntervalSince1970
-
-
-       // }
-
         trackingQueue.async { [weak self, event, properties, epochInterval] in
             guard let self = self else { return }
             var shadowEventsQueue = Queue()
@@ -1305,21 +1318,32 @@ extension MixpanelInstance {
     }
 
     #if DECIDE
-    
     func trackPushNotification(_ userInfo: [AnyHashable: Any],
-                                      event: String = "$campaign_received") {
+                                      event: String = "$campaign_received",
+                                      properties: Properties = [:]) {
         if hasOptedOutTracking() {
             return
         }
         if let mpPayload = userInfo["mp"] as? InternalProperties {
             if let m = mpPayload["m"], let c = mpPayload["c"] {
-                var properties = Properties()
+                var properties = properties
                 for (key, value) in mpPayload {
-                    if key != "m" && key != "c" {
-                        // Check Int first, since a number in the push payload is parsed as __NCSFNumber
-                        // which fails to convert to MixpanelType.
-                        if let typedValue = value as? Int { properties[key] = typedValue }
-                        if let typedValue = value as? MixpanelType { properties[key] = typedValue }
+                    // "token" and "distinct_id" are sent with the Mixpanel push payload but we don't need to track them
+                    // they are handled upstream to initialize the mixpanel instance and "distinct_id" will be passed in
+                    // explicitly in "additionalProperties"
+                    if !["m", "c", "token", "distinct_id"].contains(key) {
+                        // https://stackoverflow.com/questions/53547595/type-checks-on-int-and-bool-values-are-returning-incorrectly-in-swift-4-2
+                        if let typedValue = value as? NSNumber {
+                            if (typedValue === kCFBooleanTrue) {
+                                properties[key] = typedValue.boolValue
+                            } else if (typedValue === kCFBooleanFalse) {
+                                properties[key] = typedValue.boolValue
+                            } else {
+                                properties[key] = typedValue.intValue
+                            }
+                        }
+                        else if let typedValue = value as? String { properties[key] = typedValue }
+                        else if let typedValue = value as? MixpanelType { properties[key] = typedValue }
                     }
                 }
                 properties["campaign_id"]  = c as? Int
@@ -1544,7 +1568,7 @@ extension MixpanelInstance {
 
             if let oldValue = oldValue as? Array<MixpanelType> {
                 var vals = oldValue
-                if !vals.contains {$0.equals(rhs: groupID)} {
+                if !vals.contains(where: { $0.equals(rhs: groupID) }) {
                     vals.append(groupID)
                     superProperties[groupKey] = vals
                 }
@@ -1614,24 +1638,28 @@ extension MixpanelInstance {
 
         trackingQueue.async { [weak self] in
             guard let self = self else { return }
-            
-            self.readWriteLock.write { [weak self] in
-
+            self.networkQueue.async { [weak self] in
                 guard let self = self else {
                     return
                 }
+                self.readWriteLock.write { [weak self] in
 
-                self.alias = nil
-                self.people.distinctId = nil
-                self.userId = nil
-                self.distinctId = self.defaultDistinctId()
-                self.anonymousId = self.distinctId
-                self.hadPersistedDistinctId = nil
-                self.superProperties = InternalProperties()
-                self.people.unidentifiedQueue = Queue()
-                self.timedEvents = InternalProperties()
+                    guard let self = self else {
+                        return
+                    }
+
+                    self.alias = nil
+                    self.people.distinctId = nil
+                    self.userId = nil
+                    self.distinctId = self.defaultDistinctId()
+                    self.anonymousId = self.distinctId
+                    self.hadPersistedDistinctId = nil
+                    self.superProperties = InternalProperties()
+                    self.people.unidentifiedQueue = Queue()
+                    self.timedEvents = InternalProperties()
+                }
+                self.archive()
             }
-            self.archive()
         }
 
         optOutStatus = true

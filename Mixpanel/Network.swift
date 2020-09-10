@@ -17,10 +17,12 @@ struct BasePath {
         guard let url = URL(string: base) else {
             return nil
         }
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
-        components?.path = path
-        components?.queryItems = queryItems
-        return components?.url
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {
+            return nil
+        }
+        components.path = path
+        components.queryItems = queryItems
+        return components.url
     }
 
     static func getServerURL(identifier: String) -> String {
@@ -99,6 +101,8 @@ class Network {
             return nil
         }
 
+        Logger.debug(message: "Fetching URL");
+        Logger.debug(message: url.absoluteURL);
         var request = URLRequest(url: url)
         request.httpMethod = resource.method.rawValue
         request.httpBody = resource.requestBody

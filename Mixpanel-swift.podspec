@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name = 'Mixpanel-swift'
-  s.version = '2.6.6'
+  s.version = '2.7.7'
   s.module_name = 'Mixpanel'
   s.license = 'Apache License, Version 2.0'
   s.summary = 'Mixpanel tracking library for iOS (Swift)'
@@ -34,7 +34,6 @@ Pod::Spec.new do |s|
   }
 
   s.watchos.deployment_target = '3.0'
-  s.watchos.frameworks = 'WatchKit', 'Foundation'
   s.watchos.pod_target_xcconfig = {
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS' => '$(inherited) WATCH_OS'
   }
