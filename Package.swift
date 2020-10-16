@@ -22,8 +22,6 @@ let package = Package(
             ],
             resources: [
                 .process("placeholder-image.png"),
-            ],
-            swiftSettings: [
             ]
         ),
     ]
