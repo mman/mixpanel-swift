@@ -43,17 +43,6 @@
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
       </Testables>
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "86F86E8A22440C5C00B69832"
-            BuildableName = "MixpanelDemoWatch.app"
-            BlueprintName = "MixpanelDemoWatch"
-            ReferencedContainer = "container:MixpanelDemo.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
-      <AdditionalOptions>
-      </AdditionalOptions>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -78,17 +67,6 @@
             ReferencedContainer = "container:MixpanelDemo.xcodeproj">
          </BuildableReference>
       </RemoteRunnable>
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "86F86E8A22440C5C00B69832"
-            BuildableName = "MixpanelDemoWatch.app"
-            BlueprintName = "MixpanelDemoWatch"
-            ReferencedContainer = "container:MixpanelDemo.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
-      <AdditionalOptions>
-      </AdditionalOptions>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
